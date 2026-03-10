@@ -59,6 +59,9 @@ CONFIG_ITEMS = [
     ("media_count_limit", "媒体数量限制", "int"),
 ]
 
+# 定时任务配置
+TASK_NAME = "TwitterDownloader_Scheduled"
+
 
 class TwitterDownloaderGUI:
     def __init__(self, root):
@@ -155,7 +158,7 @@ class TwitterDownloaderGUI:
         ttk.Button(btn_frame, text="- 删除", command=self.delete_user).pack(side="left", padx=2)
         
         # 右侧：下载控制
-        right_frame = ttk.LabelFrame(content_frame, text="下载控制")
+        right_frame = ttk.LabelFrame(content_frame, text="下载控制 + 定时任务")
         right_frame.pack(side="right", fill="both", padx=(5, 0))
         
         control_frame = ttk.Frame(right_frame)
@@ -165,6 +168,77 @@ class TwitterDownloaderGUI:
         self.download_btn = ttk.Button(control_frame, text="⏹ 停止下载", command=self.stop_download)
         self.download_btn.pack(fill="x", pady=5)
         ttk.Button(control_frame, text="📂 打开下载位置", command=self.open_download_folder).pack(fill="x", pady=5)
+        
+        # ===== 定时任务区域 (首页) =====
+        schedule_frame = ttk.LabelFrame(right_frame, text="定时下载")
+        schedule_frame.pack(fill="x", padx=10, pady=10)
+        
+        # 获取当前定时状态
+        current_schedule = self.get_schedule_status()
+        
+        # 启用复选框
+        schedule_enable_var = tk.BooleanVar(value=current_schedule.get("enabled", False))
+        ttk.Checkbutton(schedule_frame, text="启用定时下载", variable=schedule_enable_var).pack(anchor="w", padx=10, pady=(10, 5))
+        
+        # 时间输入
+        time_frame = ttk.Frame(schedule_frame)
+        time_frame.pack(fill="x", padx=10, pady=5)
+        ttk.Label(time_frame, text="每天执行时间:").pack(side="left")
+        
+        # 时分输入框（使用 Entry 便于输入）
+        time_str = current_schedule.get("time", "09:00")
+        hour_var = tk.StringVar(value=time_str.split(":")[0] if ":" in time_str else "09")
+        min_var = tk.StringVar(value=time_str.split(":")[1] if ":" in time_str else "00")
+        
+        hour_entry = ttk.Entry(time_frame, textvariable=hour_var, width=3)
+        hour_entry.pack(side="left", padx=5)
+        ttk.Label(time_frame, text=":").pack(side="left")
+        min_entry = ttk.Entry(time_frame, textvariable=min_var, width=3)
+        min_entry.pack(side="left", padx=5)
+        
+        # 状态显示
+        self.home_schedule_status = ttk.Label(schedule_frame, text="", foreground="blue")
+        self.home_schedule_status.pack(anchor="w", padx=10, pady=5)
+        
+        if current_schedule.get("enabled"):
+            self.home_schedule_status.config(text=f"✅ 每天 {time_str} 自动执行", foreground="green")
+        else:
+            self.home_schedule_status.config(text="❌ 定时任务未启用", foreground="gray")
+        
+        # 保存按钮
+        def save_home_schedule():
+            enabled = schedule_enable_var.get()
+            hour = hour_var.get().strip() or "09"
+            minute = min_var.get().strip() or "00"
+            
+            # 验证输入
+            try:
+                h = int(hour)
+                m = int(minute)
+                if not (0 <= h <= 23 and 0 <= m <= 59):
+                    messagebox.showerror("错误", "时间格式不正确")
+                    return
+                time_str = f"{h:02d}:{m:02d}"
+            except ValueError:
+                messagebox.showerror("错误", "请输入有效数字")
+                return
+            
+            if enabled:
+                success, msg = self.create_scheduled_task(time_str)
+                if success:
+                    self.home_schedule_status.config(text=f"✅ 每天 {time_str} 自动执行", foreground="green")
+                    messagebox.showinfo("成功", f"定时任务已创建!\n每天 {time_str} 自动执行下载")
+                else:
+                    messagebox.showerror("错误", f"创建定时任务失败:\n{msg}")
+            else:
+                success, msg = self.delete_scheduled_task()
+                if success:
+                    self.home_schedule_status.config(text="❌ 定时任务未启用", foreground="gray")
+                    messagebox.showinfo("成功", "定时任务已删除")
+                else:
+                    self.home_schedule_status.config(text="❌ 定时任务未启用", foreground="gray")
+        
+        ttk.Button(schedule_frame, text="💾 保存定时设置", command=save_home_schedule).pack(pady=(5, 10))
         
         # 底部：日志输出
         log_frame = ttk.LabelFrame(self.root, text="日志输出")
@@ -294,6 +368,92 @@ class TwitterDownloaderGUI:
         btn_frame = ttk.Frame(scrollable_frame)
         btn_frame.pack(pady=10)
         ttk.Button(btn_frame, text="保存", command=lambda: self.save_settings_from_dialog(dialog)).pack()
+        
+        # 提示：定时任务已在首页设置
+        tip_frame = ttk.Frame(scrollable_frame)
+        tip_frame.pack(pady=10)
+        ttk.Label(tip_frame, text="💡 定时任务请在首页设置", foreground="gray").pack()
+    
+    def get_schedule_status(self):
+        """获取当前定时任务状态"""
+        try:
+            result = subprocess.run(
+                ["schtasks", "/query", "/tn", TASK_NAME],
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+            if result.returncode == 0:
+                # 解析输出获取时间
+                output = result.stdout
+                for line in output.split("\n"):
+                    if "Start Time" in line or "下一个运行时间" in line:
+                        # 尝试提取时间
+                        parts = line.split(":")
+                        if len(parts) >= 2:
+                            return {"enabled": True, "time": "09:00"}  # 默认
+                return {"enabled": True, "time": "09:00"}
+        except:
+            pass
+        return {"enabled": False, "time": "09:00"}
+    
+    def create_scheduled_task(self, time_str):
+        """创建 Windows 定时任务"""
+        try:
+            exe_path = sys.executable
+            if getattr(sys, 'frozen', False):
+                # 打包后，使用当前 exe 路径
+                exe_path = sys.executable
+            else:
+                # 开发时，需要找到 pythonw.exe
+                exe_path = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
+                if not os.path.exists(exe_path):
+                    exe_path = sys.executable
+            
+            # 构建命令 - 使用 /sc DAILY /st 指定每天固定时间，添加 --scheduled 参数触发自动下载
+            cmd = [
+                "schtasks", "/create",
+                "/tn", TASK_NAME,
+                "/tr", f'"{exe_path}" "{os.path.abspath(__file__)}" --scheduled',
+                "/sc", "DAILY",
+                "/st", time_str,
+                "/f"  # 如果存在则强制覆盖
+            ]
+            
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+            
+            if result.returncode == 0:
+                return True, "成功"
+            else:
+                return False, result.stderr or result.stdout
+        except Exception as e:
+            return False, str(e)
+    
+    def delete_scheduled_task(self):
+        """删除定时任务"""
+        try:
+            result = subprocess.run(
+                ["schtasks", "/delete", "/tn", TASK_NAME, "/f"],
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+            if result.returncode == 0:
+                return True, "已删除"
+            else:
+                return False, "任务不存在或已删除"
+        except Exception as e:
+            return False, str(e)
+    
+    def delete_scheduled_task_and_refresh(self, enable_var, status_label):
+        """删除定时任务并刷新界面"""
+        success, msg = self.delete_scheduled_task()
+        if success:
+            enable_var.set(False)
+            status_label.config(text="❌ 定时任务未启用", foreground="gray")
+            messagebox.showinfo("成功", "定时任务已删除")
+        else:
+            messagebox.showwarning("提示", msg)
     
     def browse_folder(self, var):
         """选择文件夹"""
@@ -438,11 +598,82 @@ class TwitterDownloaderGUI:
             messagebox.showwarning("提示", f"目录不存在: {save_path}")
 
 
-def main():
-    root = tk.Tk()
-    app = TwitterDownloaderGUI(root)
-    root.mainloop()
+        if os.path.exists(save_path):
+            os.startfile(save_path)
+        else:
+            messagebox.showwarning("提示", f"目录不存在: {save_path}")
+
+
+def main(scheduled_mode=False):
+    if scheduled_mode:
+        # 定时任务模式：直接运行下载，不显示 GUI
+        run_scheduled_download()
+    else:
+        # 正常模式：显示 GUI
+        root = tk.Tk()
+        app = TwitterDownloaderGUI(root)
+        root.mainloop()
+
+
+def run_scheduled_download():
+    """定时任务模式：静默下载"""
+    import sys
+    import os
+    import importlib.util
+    from datetime import datetime
+    
+    print(f"[{datetime.now()}] 定时任务开始执行...")
+    
+    # 加载配置
+    os.makedirs(TWITTER_DOWNLOAD_DIR, exist_ok=True)
+    settings = {}
+    if os.path.exists(SETTINGS_FILE):
+        with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
+            settings = json.load(f)
+    
+    user_lst = settings.get("user_lst", "")
+    user_list = [u.strip() for u in user_lst.split(",") if u.strip()]
+    
+    if not user_list:
+        print("用户列表为空，跳过下载")
+        return
+    
+    print(f"开始下载用户: {', '.join(user_list)}")
+    
+    # 设置下载目录
+    download_dir = TWITTER_DOWNLOAD_DIR
+    old_cwd = os.getcwd()
+    os.chdir(download_dir)
+    sys.path.insert(0, download_dir)
+    
+    try:
+        # 加载 main.py
+        main_py_path = os.path.join(download_dir, "main.py")
+        spec = importlib.util.spec_from_file_location("main", main_py_path)
+        main_module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(main_module)
+        
+        User_info = main_module.User_info
+        
+        # 执行下载
+        for username in user_list:
+            username = username.strip()
+            if username:
+                print(f"开始下载用户: {username}")
+                user_info = User_info(username)
+                main_module.main(user_info)
+        
+        print("下载完成")
+    
+    except Exception as e:
+        import traceback
+        print(f"错误: {str(e)}")
+        print(traceback.format_exc())
+    finally:
+        os.chdir(old_cwd)
 
 
 if __name__ == "__main__":
-    main()
+    # 检查命令行参数
+    scheduled_mode = "--scheduled" in sys.argv or "-s" in sys.argv
+    main(scheduled_mode=scheduled_mode)
